@@ -7,11 +7,17 @@ from transformers import T5ForConditionalGeneration, T5Config
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 import wandb
 
+from load_data import MODEL_NAME, DECODER_START_IDX, get_tokenizer
+
 DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
 def setup_wandb(args):
     # Implement this if you wish to use wandb in your experiments
-    pass
+    wandb.init(
+        project="dsga1011-hw4-text-to-sql",
+        name=args.experiment_name,
+        config=vars(args),
+    )
 
 def initialize_model(args):
     '''
@@ -20,7 +26,34 @@ def initialize_model(args):
     or training a T5 model initialized with the 'google-t5/t5-small' config
     from scratch.
     '''
-    pass
+    if args.finetune:
+        model = T5ForConditionalGeneration.from_pretrained(MODEL_NAME)
+    else:
+        config = T5Config.from_pretrained(MODEL_NAME)
+        model = T5ForConditionalGeneration(config)
+
+    tokenizer = get_tokenizer()
+    # Ensure all tokenizer IDs have corresponding model embeddings.
+    # T5 may already have spare embedding rows, so do not shrink them.
+    embedding_rows = model.get_input_embeddings().num_embeddings
+
+    if len(tokenizer) > embedding_rows:
+        model.resize_token_embeddings(len(tokenizer))
+        
+    # Match the decoder inputs constructed in load_data.py.
+    model.config.decoder_start_token_id = DECODER_START_IDX
+    model.config.pad_token_id = tokenizer.pad_token_id
+    model.config.eos_token_id = tokenizer.eos_token_id
+
+    model.generation_config.decoder_start_token_id = DECODER_START_IDX
+    model.generation_config.pad_token_id = tokenizer.pad_token_id
+    model.generation_config.eos_token_id = tokenizer.eos_token_id
+
+    # Baseline: fine-tune all parameters.
+    for parameter in model.parameters():
+        parameter.requires_grad = True
+
+    return model.to(DEVICE)
 
 def mkdir(dirpath):
     if not os.path.exists(dirpath):
@@ -30,12 +63,36 @@ def mkdir(dirpath):
             pass
 
 def save_model(checkpoint_dir, model, best):
-    # Save model checkpoint to be able to load the model later
-    pass
+    checkpoint_name = "best" if best else "last"
+    save_dir = os.path.join(checkpoint_dir, checkpoint_name)
+    mkdir(save_dir)
+
+    model.save_pretrained(save_dir)
+    get_tokenizer().save_pretrained(save_dir)
 
 def load_model_from_checkpoint(args, best):
     # Load model from a checkpoint
-    pass
+    model_type = "ft" if args.finetune else "scr"
+    checkpoint_name = "best" if best else "last"
+
+    checkpoint_dir = os.path.join(
+        "checkpoints",
+        f"{model_type}_experiments",
+        args.experiment_name,
+        checkpoint_name,
+    )
+
+    if not os.path.isfile(os.path.join(checkpoint_dir, "config.json")):
+        raise FileNotFoundError(
+            f"No saved model found in {checkpoint_dir}"
+        )
+
+    model = T5ForConditionalGeneration.from_pretrained(
+        checkpoint_dir,
+        local_files_only=True,
+    )
+
+    return model.to(DEVICE)
 
 def initialize_optimizer_and_scheduler(args, model, epoch_length):
     optimizer = initialize_optimizer(args, model)

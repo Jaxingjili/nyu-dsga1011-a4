@@ -45,7 +45,32 @@ def do_train(args, model, train_dataloader, save_dir="./out"):
     # You can use progress_bar.update(1) to see the progress during training
     # You can refer to the pytorch tutorial covered in class for reference
 
-    raise NotImplementedError
+    for epoch in range(num_epochs):
+        for batch in train_dataloader:
+            # Move input tensors and labels to the model's device.
+            batch = {k: v.to(device) for k, v in batch.items()}
+
+            # Clear gradients left over from the previous batch.
+            optimizer.zero_grad()
+
+            # Forward pass: passing labels makes BERT compute the loss.
+            outputs = model(**batch)
+            loss = outputs.loss
+
+            # Backward pass and parameter update.
+            loss.backward()
+            optimizer.step()
+
+            # Update the learning rate after the optimizer step.
+            lr_scheduler.step()
+
+            progress_bar.update(1)
+            progress_bar.set_postfix(
+                epoch=epoch + 1,
+                loss=f"{loss.item():.4f}"
+            )
+
+    progress_bar.close()
 
     ##### YOUR CODE ENDS HERE ######
 
@@ -88,12 +113,52 @@ def do_eval(eval_dataloader, output_dir, out_file):
 def create_augmented_dataloader(args, dataset):
     ################################
     ##### YOUR CODE BEGINGS HERE ###
+    # Select 5,000 distinct training reviews reproducibly.
+    selected_dataset = (
+        dataset["train"]
+        .shuffle(seed=42)
+        .select(range(5000))
+    )
 
-    # Here, 'dataset' is the original dataset. You should return a dataloader called 'train_dataloader' -- this
-    # dataloader will be for the original training split augmented with 5k random transformed examples from the training set.
-    # You may find it helpful to see how the dataloader was created at other place in this code.
+    # Transform copies of those reviews, preserving their labels.
+    transformed_dataset = selected_dataset.map(
+        custom_transform,
+        load_from_cache_file=False,
+        desc="Transforming 5,000 training reviews",
+    )
 
-    raise NotImplementedError
+    # Keep all original training reviews and add transformed copies.
+    augmented_dataset = datasets.concatenate_datasets([
+        dataset["train"],
+        transformed_dataset,
+    ])
+
+    # Tokenize using the same settings as the original training data.
+    augmented_tokenized_dataset = augmented_dataset.map(
+        tokenize_function,
+        batched=True,
+        load_from_cache_file=False,
+        desc="Tokenizing augmented training data",
+    )
+
+    augmented_tokenized_dataset = (
+        augmented_tokenized_dataset.remove_columns(["text"])
+    )
+    augmented_tokenized_dataset = (
+        augmented_tokenized_dataset.rename_column("label", "labels")
+    )
+    augmented_tokenized_dataset.set_format("torch")
+
+    train_dataloader = DataLoader(
+        augmented_tokenized_dataset,
+        shuffle=True,
+        batch_size=args.batch_size,
+    )
+
+    print(f"Original training examples: {len(dataset['train'])}")
+    print(f"Added transformed examples: {len(transformed_dataset)}")
+    print(f"Total training examples: {len(augmented_dataset)}")
+    print(f"Training batches per epoch: {len(train_dataloader)}")
 
     ##### YOUR CODE ENDS HERE ######
 
